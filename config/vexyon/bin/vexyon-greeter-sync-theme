@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Sincroniza el tema activo y el idioma de Vexyon con el greeter (greetd).
+# El greeter corre ANTES de la sesión de usuario y no puede leer $HOME, así
+# que usa snapshots estáticos en /etc/greetd/vexyon-greeter/ (theme.json y
+# el campo "lang" de greeter.json). Ejecuta esto (pide sudo) después de
+# cambiar de tema o de idioma si quieres que el greeter lo refleje.
+set -euo pipefail
+
+CFG="$HOME/.config/vexyon/shell.json"
+DEST=/etc/greetd/vexyon-greeter/theme.json
+GJSON=/etc/greetd/vexyon-greeter/greeter.json
+
+active=$(jq -r '.theme.active // empty' "$CFG" 2>/dev/null || true)
+if [ -z "$active" ]; then
+  echo "No hay tema activo en $CFG" >&2
+  exit 1
+fi
+
+src="$HOME/.local/share/vexyon/themes/$active.json"
+if [ ! -f "$src" ]; then
+  echo "Tema '$active' no encontrado en $src" >&2
+  exit 1
+fi
+
+sudo install -Dm644 "$src" "$DEST"
+echo "Greeter → tema '$active' ($DEST)"
+
+lang=$(jq -r '.appearance.language // "en"' "$CFG" 2>/dev/null || echo en)
+[ "$lang" = "es" ] || lang="en"
+user=$(jq -r '.user // empty' "$GJSON" 2>/dev/null || true)
+[ -n "$user" ] || user="$USER"
+printf '{ "user": "%s", "lang": "%s" }\n' "$user" "$lang" | sudo tee "$GJSON" >/dev/null
+echo "Greeter → idioma '$lang' ($GJSON)"
+
+# teclado del kiosco del greeter = el de la sesión (para la contraseña)
+kb=$(jq -r '.behavior.keyboardLayout // "us"' "$CFG" 2>/dev/null || echo us)
+case "$kb" in latam|ara|[a-z][a-z]) : ;; *) kb=us ;; esac
+if [ -f /etc/greetd/vexyon-greeter/hyprland.conf ]; then
+  sudo sed -i "s/^\([[:space:]]*kb_layout = \).*/\1${kb}/" /etc/greetd/vexyon-greeter/hyprland.conf
+  echo "Greeter → teclado '$kb'"
+fi
