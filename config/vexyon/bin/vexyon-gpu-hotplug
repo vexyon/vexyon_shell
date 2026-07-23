@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Vexyon — handler de hotplug de GPU (root, disparado por udev; instalado en
+# /usr/local/bin SOLO en máquinas híbridas — regla 91-vexyon-gpu-hotplug.rules,
+# ACTION=change en cardN). NO es un daemon: recalcula la decisión con
+# vexyon-gpu-detect, y si el conf generado NO cambia (evento de ruido: DPMS,
+# re-probe, un segundo monitor en la misma GPU) sale inmediatamente.
+#
+# Si el conf SÍ cambia (una pantalla cruzó la frontera iGPU/dGPU):
+#   1. reescribe ~/.config/hypr/vexyon-gpu.conf del usuario (dueño preservado)
+#      y la copia del kiosco del greeter,
+#   2. deja el flag vexyon-gpu-restart en el runtime dir del dueño de cada
+#      Hyprland vivo y le manda SIGTERM: vexyon-start ve el flag y RELANZA
+#      Hyprland dentro de la MISMA sesión de login (sin reboot, sin re-login);
+#      el kiosco del greeter lo respawnea greetd solo.
+set -u
+
+HOME_DIR="${1:?usage: vexyon-gpu-hotplug /home/USER}"
+CONF="$HOME_DIR/.config/hypr/vexyon-gpu.conf"
+GREET_DIR="${VEXYON_GREETER_DIR:-/etc/greetd/vexyon-greeter}"   # overrides solo tests
+RUN_BASE="${VEXYON_RUN_BASE:-/run/user}"
+LOCK="${VEXYON_GPU_LOCK:-/run/vexyon-gpu-hotplug.lock}"
+DETECT="${VEXYON_GPU_DETECT:-/usr/local/bin/vexyon-gpu-detect}"
+
+# Un plug genera una ráfaga de eventos change (uno por conector re-probado):
+# serializar; los siguientes ven el conf ya reescrito y salen por el compare.
+exec 9>"$LOCK"
+flock 9
+
+desired="$("$DETECT" conf)" || exit 0
+current="$(cat "$CONF" 2>/dev/null || true)"
+[ "$desired" = "$current" ] && exit 0
+
+[ -d "${CONF%/*}" ] || exit 0
+printf '%s\n' "$desired" > "$CONF.tmp"
+chown --reference="$HOME_DIR" "$CONF.tmp" 2>/dev/null || true
+mv "$CONF.tmp" "$CONF"
+if [ -d "$GREET_DIR" ]; then
+  printf '%s\n' "$desired" > "$GREET_DIR/vexyon-gpu.conf"
+fi
+
+# Reiniciar el compositor que esté vivo (sesión O greeter — nunca conviven
+# salvo el instante del handoff). El flag va ANTES del SIGTERM.
+for pid in $(pgrep -x Hyprland); do
+  uid="$(stat -c %u "/proc/$pid" 2>/dev/null)" || continue
+  rd="$RUN_BASE/$uid"
+  if [ -d "$rd" ]; then
+    : > "$rd/vexyon-gpu-restart"
+    chown "$uid" "$rd/vexyon-gpu-restart" 2>/dev/null || true
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+done
+exit 0
