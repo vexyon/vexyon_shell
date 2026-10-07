@@ -332,7 +332,8 @@ deploy_trees() {
     mv "$user_cfg" "$HOME/.config/vexyon/shell.json"
   fi
   cp -r "$SRC/config/hypr/."   "$HOME/.config/hypr/"
-  cp -r "$SRC/config/fish/."   "$HOME/.config/fish/"
+  # fish: conf.d/vexyon-theme.fish y conf.d/vexyon-greeting.fish los GENERA el
+  # bridge (--oneshot más abajo) desde shell.json; el repo ya no trae config/fish.
   cp -r "$SRC/share/vexyon/."  "$HOME/.local/share/vexyon/"
   # Seed default config if absent (never overwrite a user's edited one)
   if [ ! -s "$HOME/.config/vexyon/shell.json" ]; then
@@ -352,8 +353,8 @@ link_helpers() {
 
   # ~/.local/bin en el PATH de las shells interactivas: el shell objetivo es
   # Fish → fish_add_path en config.fish, idempotente (guard por grep, sin
-  # duplicar en re-runs; deploy_trees no pisa config.fish — el repo solo trae
-  # conf.d/). Los binds de Hyprland (Super+B) NO pasan por fish: su PATH lo
+  # duplicar en re-runs; deploy_trees no pisa config.fish — fish solo recibe
+  # los conf.d/ que genera el bridge). Los binds de Hyprland (Super+B) NO pasan por fish: su PATH lo
   # cubre vexyon-start (export al arrancar la sesión).
   local fish_cfg="$HOME/.config/fish/config.fish"
   mkdir -p "$HOME/.config/fish"
@@ -418,7 +419,7 @@ kbs = cfg.setdefault("keybinds", [])
 have_ids = {k.get("id") for k in kbs}
 combos = {(tuple(sorted(k.get("mods", []))), k.get("key")) for k in kbs}
 added = []
-LATE = {"vmmanager"}          # ids anadidos despues de la primera version
+LATE = {"vmmanager", "calculator"}  # ids anadidos despues de la primera version
 for k in defaults:
     if k.get("category") != "Media" and k.get("id") not in LATE:
         continue
@@ -437,7 +438,7 @@ if added:
     print("seeded: " + ", ".join(added))
 PYEOF
 }
-try_step "Seeding new keybinds (media keys, Super+V VM manager)" \
+try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator)" \
   "shell.json unreadable — skipped" \
   seed_media_keybinds
 
