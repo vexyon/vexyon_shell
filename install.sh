@@ -419,7 +419,7 @@ kbs = cfg.setdefault("keybinds", [])
 have_ids = {k.get("id") for k in kbs}
 combos = {(tuple(sorted(k.get("mods", []))), k.get("key")) for k in kbs}
 added = []
-LATE = {"vmmanager", "calculator"}  # ids anadidos despues de la primera version
+LATE = {"vmmanager", "calculator", "recorder"}  # ids anadidos despues de la primera version
 for k in defaults:
     if k.get("category") != "Media" and k.get("id") not in LATE:
         continue
@@ -438,7 +438,7 @@ if added:
     print("seeded: " + ", ".join(added))
 PYEOF
 }
-try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator)" \
+try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator, Super+Shift+R recorder)" \
   "shell.json unreadable — skipped" \
   seed_media_keybinds
 
