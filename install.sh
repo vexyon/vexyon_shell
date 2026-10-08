@@ -146,6 +146,11 @@ PKGS=(
   hyprland quickshell jq hyprsunset ghostty fish
   python python-pillow
   qt6-base qt6-declarative qt6-svg
+  # qt6-imageformats: lector WebP de Qt. qt6-base solo trae PNG/JPEG/GIF/BMP y
+  # el selector de foto de perfil ofrece *.webp: sin él un avatar WebP no carga
+  # y Ajustes / Super+C / bloqueo enseñan solo la inicial. En NixOS lo exporta
+  # la sesión del módulo (QT_PLUGIN_PATH).
+  qt6-imageformats
   # xdg-desktop-portal-gtk: backend del portal Settings (fallback declarado en
   # hyprland-portals.conf) — expone org.freedesktop.appearance color-scheme
   # para que apps y navegadores sigan el modo claro/oscuro del tema activo.
