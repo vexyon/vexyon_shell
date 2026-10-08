@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Vexyon installer
+#  Vexyon installer (3.0)
+#  OUT OF THE BOX: installs and configures EVERY dependency of every feature,
+#  optional modules included (virtual machines, Bluetooth, screen recording),
+#  so nothing afterwards needs a package install, a systemctl or a config edit.
+#  Optional modules are on by default and are switched in Settings → Modules.
 #  Installs dependencies and deploys the shell into the standard locations:
 #    config/vexyon  -> ~/.config/vexyon
 #    config/hypr    -> ~/.config/hypr        (an existing hyprland.lua is backed up)
@@ -16,6 +20,7 @@
 set -Eeuo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VEXYON_VERSION="3.0"
 
 # El uploader web de GitHub (drag & drop) QUITA el bit ejecutable — todo llega
 # como 100644 venga como venga. Re-asegurar +x ANTES de que nada los invoque,
@@ -126,7 +131,7 @@ trap 'st=$?; printf "\n  %s✗ Install aborted (exit %s) at: %s%s\n" "$C_R" "$st
 # --- Banner -----------------------------------------------------------------
 printf '\n'
 printf '  %s╭───╮%s\n' "$C_A" "$C_0"
-printf '  %s│ V │%s  %sVexyon%s — desktop shell for Hyprland\n' "$C_A" "$C_0" "$C_B" "$C_0"
+printf '  %s│ V │%s  %sVexyon %s%s — desktop shell for Hyprland\n' "$C_A" "$C_0" "$C_B" "$VEXYON_VERSION" "$C_0"
 printf '  %s╰───╯%s  %sinstaller · full log: %s%s\n' "$C_A" "$C_0" "$C_D" "$LOG" "$C_0"
 
 # --- Privileges -------------------------------------------------------------
@@ -183,7 +188,33 @@ PKGS=(
   # aquí para no depender de los defectos de la distro.
   upower power-profiles-daemon
   sshfs openssh
+  # --- 3.0: what features already used but nothing installed ---------------
+  #   hyprpicker      the color-picker bar widget
+  #   pacman-contrib  `checkupdates`, the update widget's counter
+  #   libpulse        `pactl`: Settings → Audio device lists, privacy widget
+  #   psmisc          `fuser`: the privacy widget's camera check
+  hyprpicker pacman-contrib libpulse psmisc
 )
+
+# --- Optional modules' packages (Settings → Modules) --------------------------
+# Installed always, like everything else: a module turned off keeps its
+# packages, so turning it back on never needs a download. Only its services
+# stop starting (see "Optional modules" below).
+MOD_PKGS=(
+  # Screen recording: the encoder; runs only while recording.
+  wf-recorder
+  # Bluetooth: bluetoothd (starts only when an adapter is present).
+  bluez
+  # Virtual machines: libvirt, its NAT/DHCP (dnsmasq), the display window,
+  # TPM for Windows 11, shared folders, UEFI firmware.
+  libvirt dnsmasq virt-viewer swtpm virtiofsd edk2-ovmf
+)
+# QEMU: qemu-desktop, unless some QEMU is already installed. qemu-full and
+# qemu-base conflict with it, and `pacman --noconfirm` answers "no" to the
+# replacement question — the whole transaction would fail.
+command -v qemu-system-x86_64 >/dev/null 2>&1 || MOD_PKGS+=(qemu-desktop)
+# libvirt's NAT needs a firewall command; nearly every system has one.
+{ command -v nft || command -v iptables; } >/dev/null 2>&1 || MOD_PKGS+=(nftables)
 
 # Wallpaper daemon: upstream renamed `swww` to `awww` (Arch extra y CachyOS ya
 # solo empaquetan awww, que hace Provides=swww). Instalar el que exista para
@@ -211,8 +242,23 @@ elif command -v pacman >/dev/null 2>&1; then
       sudo pacman -S --noconfirm --needed "${missing[@]}"
     SUMMARY+=("Dependencies: ${#missing[@]} packages installed (${#PKGS[@]} total)")
   fi
+  # Module packages in their own transaction: if one cannot be installed
+  # (a conflict with something the user chose), the rest of Vexyon still is,
+  # and the module's Settings page says exactly what is missing.
+  mod_missing=()
+  while IFS= read -r p; do [ -n "$p" ] && mod_missing+=("$p"); done \
+    < <(pacman -T "${MOD_PKGS[@]}" || true)
+  if [ "${#mod_missing[@]}" -eq 0 ]; then
+    ok "All ${#MOD_PKGS[@]} optional-module packages already installed"
+  else
+    note "${#mod_missing[@]} optional-module packages to install:"
+    printf '%s\n' "${mod_missing[*]}" | fold -s -w 62 | sed "s/^/      ${C_D}/;s/\$/${C_0}/"
+    try_step "Installing ${#mod_missing[@]} optional-module packages (pacman)" \
+      "a module may report missing pieces in Settings" \
+      sudo pacman -S --noconfirm --needed "${mod_missing[@]}"
+  fi
 else
-  warn "pacman not found — install these manually: ${PKGS[*]}"
+  warn "pacman not found — install these manually: ${PKGS[*]} ${MOD_PKGS[*]}"
 fi
 
 # --- System integration -----------------------------------------------------
@@ -291,6 +337,236 @@ for svc in mako dunst swaync; do
   fi
   systemctl --user disable --now "$svc.service" >/dev/null 2>&1 || true
 done
+
+# --- Optional modules: system part (Settings → Modules) ---------------------
+# 3.0. Virtual machines and Bluetooth are OPTIONAL MODULES: installed and on
+# by default, switched off in Settings → Modules without any command. The
+# switch never stops anything mid-session; it decides whether the module's
+# services may start at the NEXT boot:
+#   /usr/local/lib/vexyon/vexyon-modules      root-owned helper — the ONLY
+#                                             thing the shell can run as root,
+#                                             through pkexec + this action:
+#   /usr/share/polkit-1/actions/org.vexyon.modules.policy   (admin password)
+#   /etc/systemd/system/vexyon-modules.service              once per boot,
+#                                             before sysinit.target
+#   /etc/systemd/system/<unit>.d/50-vexyon-modules.conf     on every service
+#                                             of a module:
+#                                             ConditionPathExists=!…/<id>.gated
+# The choice lives in /var/lib/vexyon/modules (root, 0755). Packages stay
+# installed, so turning a module back on needs no download. Same design as the
+# NixOS module; see PROJECT_STATE.md → Vexyon 3.0.
+section "Optional modules"
+MOD_HELPER=/usr/local/lib/vexyon/vexyon-modules
+MOD_STATE=/var/lib/vexyon/modules
+# Every unit libvirt starts by itself (systemd-machined, the firewall and
+# NetworkManager are shared and never gated), and BlueZ's daemon. A drop-in
+# for a unit that does not exist is inert.
+VM_UNITS=(libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket
+          libvirtd-tcp.socket libvirtd-tls.socket
+          virtlogd.service virtlogd.socket virtlogd-admin.socket
+          virtlockd.service virtlockd.socket virtlockd-admin.socket
+          libvirt-guests.service virt-secret-init-encryption.service)
+BT_UNITS=(bluetooth.service)
+
+write_gate() {   # <unit> <module id> <module name>
+  sudo install -d -m 0755 "/etc/systemd/system/$1.d"
+  printf '%s\n' \
+    "# Vexyon modules (written by install.sh): Settings → Modules → $3" \
+    "# decides at boot whether this unit may start. See vexyon-modules.service." \
+    "[Unit]" \
+    "Wants=vexyon-modules.service" \
+    "After=vexyon-modules.service" \
+    "ConditionPathExists=!/run/vexyon/modules/$2.gated" |
+    sudo tee "/etc/systemd/system/$1.d/50-vexyon-modules.conf" >/dev/null
+}
+
+install_modules_system() {
+  local u
+  sudo install -D -m 0755 -o root -g root "$SRC/config/vexyon/bin/vexyon-modules" "$MOD_HELPER"
+  sudo install -D -m 0644 -o root -g root "$SRC/config/polkit/org.vexyon.modules.policy" \
+    /usr/share/polkit-1/actions/org.vexyon.modules.policy
+  sudo install -d -m 0755 -o root -g root /var/lib/vexyon "$MOD_STATE"
+  sudo tee /etc/systemd/system/vexyon-modules.service >/dev/null <<'UNIT'
+# Vexyon modules (written by install.sh). Once per boot, before any socket or
+# service of a module can start: freezes this boot's choices from
+# /var/lib/vexyon/modules into /run/vexyon/modules and gates the services of
+# modules that are off. Run later it does nothing: module changes always take
+# effect at the next boot, never mid-session.
+[Unit]
+Description=Vexyon modules: apply this boot's module choices
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+RequiresMountsFor=/var/lib/vexyon
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/vexyon/vexyon-modules boot-apply
+
+[Install]
+WantedBy=sysinit.target
+UNIT
+  for u in "${VM_UNITS[@]}"; do write_gate "$u" vm "Virtual machines"; done
+  for u in "${BT_UNITS[@]}"; do write_gate "$u" bluetooth "Bluetooth"; done
+  # Only reloads unit files: nothing running is restarted.
+  sudo systemctl daemon-reload
+  sudo systemctl enable vexyon-modules.service
+}
+MODULES_OK=0
+try_step "Modules: helper, polkit action, boot unit and service conditions" \
+  "Settings → Modules will not be able to switch modules" \
+  install_modules_system && [ -x "$MOD_HELPER" ] && MODULES_OK=1
+
+# One-time migration from 2.x: the VM switch lived in shell.json
+# (`virtualization.enabled`, off by default). Off stays off; anything else
+# gets 3.0's default (on). Once only, so a later choice in Settings is never
+# overridden by a re-run of this installer.
+if [ "$MODULES_OK" = 1 ] && [ ! -e "$MOD_STATE/.migrated-3.0" ]; then
+  if [ -s "$HOME/.config/vexyon/shell.json" ] &&
+     jq -e '.virtualization.enabled == false' "$HOME/.config/vexyon/shell.json" >/dev/null 2>&1; then
+    # The log is the user's file: the redirect is meant to run unprivileged.
+    # shellcheck disable=SC2024
+    if sudo "$MOD_HELPER" set vm off >> "$LOG" 2>&1; then
+      note "Virtual machines module kept off, as it was before 3.0 (Settings → Modules turns it on)"
+    fi
+  fi
+  sudo touch "$MOD_STATE/.migrated-3.0"
+fi
+vm_wanted() { [ ! -e "$MOD_STATE/vm.disabled" ]; }
+bt_wanted() { [ ! -e "$MOD_STATE/bluetooth.disabled" ]; }
+[ "$MODULES_OK" = 1 ] && SUMMARY+=("Modules: virtual machines $(vm_wanted && echo on || echo off), Bluetooth $(bt_wanted && echo on || echo off), screen recording on — Settings → Modules")
+
+# --- Virtual machines (module "vm") -------------------------------------------
+section "Virtual machines"
+LOGIN_AGAIN=0
+if ! command -v virsh >/dev/null 2>&1; then
+  warn "libvirt is not installed — Settings → Virtualization will show what is missing"
+elif systemctl is-enabled virtqemud.socket >/dev/null 2>&1 || systemctl is-active virtqemud.socket >/dev/null 2>&1; then
+  # The user already runs libvirt's modular daemons (virtqemud & co.). That
+  # setup is theirs: left exactly as it is, and never gated by the module.
+  note "libvirt already runs with its modular daemons (virtqemud) — left as it is"
+  SUMMARY+=("VMs: your libvirt setup (modular daemons) left as it is")
+else
+  if [ "$(systemctl is-enabled libvirtd.service 2>/dev/null || true)" = masked ]; then
+    warn "libvirtd.service is masked — the VM manager cannot work until it is unmasked"
+  else
+    # The daemon at boot (it starts VMs marked to start with the computer,
+    # then exits after 120 s idle — LIBVIRTD_ARGS=--timeout 120 in its unit),
+    # and its sockets (Also= in its unit) bring it back on demand.
+    try_step "Enabling libvirt (daemon at boot, sockets on demand)" \
+      "the VM manager will report libvirtd as missing" \
+      sudo systemctl enable libvirtd.service
+    if vm_wanted; then
+      try_step "Starting libvirt's sockets" "they start with the next boot instead" \
+        sudo systemctl start libvirtd.socket virtlogd.socket virtlockd.socket
+    fi
+  fi
+  # VMs without a password: libvirt's own polkit rule trusts the libvirt group.
+  if getent group libvirt >/dev/null 2>&1 && ! id -nG "$USER" | tr ' ' '\n' | grep -qx libvirt; then
+    try_step "Adding $USER to the libvirt group" "the VM manager will ask for a password" \
+      sudo usermod -aG libvirt "$USER"
+    LOGIN_AGAIN=1
+  fi
+  # Docker and ufw set a DROP policy in the iptables tables, which libvirt's
+  # nftables rules (another table) cannot override: VMs lose the internet and
+  # DHCP. libvirt's iptables backend writes into the same tables, ahead of
+  # theirs (measured: PROJECT_STATE.md, VM networking session). Only when
+  # nothing chose a backend yet — a firewall_backend line someone wrote is
+  # never touched.
+  if command -v dockerd >/dev/null 2>&1 || command -v ufw >/dev/null 2>&1; then
+    nconf=/etc/libvirt/network.conf
+    cur_be=$(sed -n 's/^[[:space:]]*firewall_backend[[:space:]]*=[[:space:]]*"\{0,1\}\([a-z]*\).*/\1/p' "$nconf" 2>/dev/null | tail -n 1)
+    if [ -z "$cur_be" ]; then
+      set_libvirt_iptables() {
+        printf '\n%s\n%s\n%s\n' \
+          "# Vexyon (install.sh): Docker/ufw drop forwarded traffic in the iptables" \
+          "# tables, which libvirt's nftables rules cannot override." \
+          'firewall_backend = "iptables"' | sudo tee -a "$nconf" >/dev/null
+      }
+      try_step "libvirt firewall: iptables backend (Docker or ufw is installed)" \
+        "VMs may get no network while Docker/ufw is active" \
+        set_libvirt_iptables
+      note "libvirt reads it when it next starts (at the latest, the next boot); running VMs are not touched"
+    elif [ "$cur_be" != iptables ]; then
+      warn "/etc/libvirt/network.conf sets firewall_backend = \"$cur_be\" and Docker/ufw is installed —"
+      warn "left as you set it. If VMs get no network, Diagnose networks in the VM manager says why."
+    fi
+  fi
+  # libvirt's default NAT network ships defined (and set to autostart) with
+  # the package. Defined here only if it is missing; never started here: the
+  # VM manager starts a VM's networks when the VM starts.
+  ensure_default_net() {
+    sudo virsh -c qemu:///system net-info default >/dev/null 2>&1 && return 0
+    local t rc=0
+    t=$(mktemp)
+    cat > "$t" <<'XML'
+<network>
+  <name>default</name>
+  <forward mode='nat'/>
+  <bridge name='virbr0' stp='on' delay='0'/>
+  <ip address='192.168.122.1' netmask='255.255.255.0'>
+    <dhcp><range start='192.168.122.2' end='192.168.122.254'/></dhcp>
+  </ip>
+</network>
+XML
+    sudo virsh -c qemu:///system net-define "$t" || rc=$?
+    rm -f "$t"
+    return "$rc"
+  }
+  if vm_wanted && systemctl is-active libvirtd.socket >/dev/null 2>&1; then
+    try_step "libvirt's default NAT network" "create it from the VM manager's Host networks tab" \
+      ensure_default_net
+  fi
+  [ -e /dev/kvm ] || warn "No /dev/kvm: turn on VT-x / AMD-V (SVM) in the firmware settings to run VMs"
+  SUMMARY+=("VMs: libvirt + QEMU ready ($(vm_wanted && echo 'module on' || echo 'module off — Settings → Modules'))")
+fi
+
+# --- Bluetooth (module "bluetooth") -----------------------------------------
+section "Bluetooth"
+if [ ! -e /usr/lib/systemd/system/bluetooth.service ]; then
+  warn "BlueZ is not installed — the Bluetooth module has nothing to run"
+else
+  case "$(systemctl is-enabled bluetooth.service 2>/dev/null || true)" in
+    masked)
+      warn "bluetooth.service is masked — Bluetooth stays off until it is unmasked" ;;
+    enabled|enabled-runtime)
+      ok "Bluetooth service already enabled" ;;
+    *)
+      # bluetoothd only starts when an adapter is present (its own condition).
+      try_step "Enabling Bluetooth" "Bluetooth controls will show no adapter" \
+        sudo systemctl enable bluetooth.service
+      if bt_wanted; then
+        try_step "Starting Bluetooth" "it starts with the next boot instead" \
+          sudo systemctl start bluetooth.service
+      fi
+      ;;
+  esac
+fi
+
+# --- Network: NetworkManager --------------------------------------------------
+# The network panel, Wi-Fi and the DNS selector all drive NetworkManager
+# (nmcli). The package was always installed but the service was never
+# enabled. It is enabled only when nothing else manages the network — two
+# managers on one interface cut the connection — and only from the next boot:
+# the connection in use right now is not touched.
+NM_RIVAL=""
+for svc in systemd-networkd.service connman.service dhcpcd.service iwd.service netctl.service wicd.service; do
+  if systemctl is-enabled "$svc" >/dev/null 2>&1 || systemctl is-active "$svc" >/dev/null 2>&1; then
+    NM_RIVAL="$svc"
+    break
+  fi
+done
+if systemctl is-enabled NetworkManager.service >/dev/null 2>&1; then
+  ok "NetworkManager already enabled"
+elif [ -n "$NM_RIVAL" ]; then
+  warn "$NM_RIVAL already manages the network — NetworkManager NOT enabled."
+  warn "Vexyon's network panel and DNS selector need NetworkManager."
+else
+  try_step "Enabling NetworkManager (from the next boot)" "the network panel will not work" \
+    sudo systemctl enable NetworkManager.service
+fi
 
 # --- Shell files ------------------------------------------------------------
 section "Shell files"
@@ -421,8 +697,29 @@ sj, dk = sys.argv[1], sys.argv[2]
 cfg = json.load(open(sj))
 defaults = json.load(open(dk))
 kbs = cfg.setdefault("keybinds", [])
+before = list((cfg.get("state") or {}).get("migrations") or []) if isinstance(cfg.get("state"), dict) else []
 have_ids = {k.get("id") for k in kbs}
 combos = {(tuple(sorted(k.get("mods", []))), k.get("key")) for k in kbs}
+# 3.0: the recorder's default moved from Super+Shift+R to Super+Shift+V.
+# An existing bind moves only while it still sits on the old default and V is
+# free, and only once: a later deliberate choice of R is never undone.
+MIG = "recorder-super-shift-v"
+state = cfg.get("state")
+if not isinstance(state, dict):
+    state = cfg["state"] = {}
+done = state.get("migrations")
+if not isinstance(done, list):
+    done = state["migrations"] = []
+moved = False
+if MIG not in done:
+    for k in kbs:
+        if k.get("id") == "recorder" and sorted(k.get("mods", [])) == ["SHIFT", "SUPER"] and k.get("key") == "R":
+            if (("SHIFT", "SUPER"), "V") not in combos:
+                k["key"] = "V"
+                moved = True
+            break
+    done.append(MIG)
+    combos = {(tuple(sorted(k.get("mods", []))), k.get("key")) for k in kbs}
 added = []
 LATE = {"vmmanager", "calculator", "recorder"}  # ids anadidos despues de la primera version
 for k in defaults:
@@ -434,16 +731,19 @@ for k in defaults:
         continue  # el usuario ya usa esa tecla para otra cosa
     kbs.append(k)
     added.append(k["id"])
-if added:
+if added or MIG not in before:
     tmp = sj + ".tmp"
     with open(tmp, "w") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
     os.replace(tmp, sj)
-    print("seeded: " + ", ".join(added))
+    if added:
+        print("seeded: " + ", ".join(added))
+    if moved:
+        print("recorder moved from Super+Shift+R to Super+Shift+V")
 PYEOF
 }
-try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator, Super+Shift+R recorder)" \
+try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator, Super+Shift+V recorder)" \
   "shell.json unreadable — skipped" \
   seed_media_keybinds
 
@@ -675,6 +975,9 @@ fi
 
 printf '\n  %sNext steps%s\n' "$C_B" "$C_0"
 note 'Reboot — the Vexyon login screen appears; pick the "Vexyon" session and log in.'
+if [ "$LOGIN_AGAIN" = 1 ]; then
+  note "You were added to the libvirt group: it applies from your next login (the reboot covers it)."
+fi
 note "Or start it from a TTY with:  vexyon-start"
 if [ "${VEXYON_GPU_NVIDIA:-0}" = 1 ] && [ "${VEXYON_GPU_MODE:-}" = pin ]; then
   note "Verify the iGPU pin afterwards:  nvidia-smi  (no Hyprland/quickshell process expected)"

@@ -4,6 +4,7 @@
 
 **A from-scratch Wayland desktop shell for Hyprland — lightweight, fully themeable, and 100% configurable from the UI. No dotfiles required.**
 
+[![Version](https://img.shields.io/badge/version-3.0-8a2be2)](CHANGELOG.md)
 [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-1793D1?logo=archlinux&logoColor=white)](https://archlinux.org)
 [![CachyOS](https://img.shields.io/badge/CachyOS-supported-00a693)](https://cachyos.org)
 [![Hyprland](https://img.shields.io/badge/Hyprland-58E1FF?logo=hyprland&logoColor=black)](https://hypr.land)
@@ -60,6 +61,9 @@ Vexyon is a complete desktop shell built from scratch in QML on [Quickshell](htt
 - **Built-in everything** — app launcher, file manager, clipboard history, screenshot tool with region crop, notification center, quick settings, media / volume / network / battery / system-monitor panels, power menu and a keybind editor.
 - **Lock screen with PAM auth** — blurred wallpaper backdrop, themed clock, avatar and status pills (keyboard layout, battery, weather).
 - **i18n** — English and Spanish, switchable live from Settings (dates, weather and all UI strings included).
+- **Virtual machines** — a built-in VM manager (Super+V) on libvirt/QEMU: create, start, stop, snapshots, shared folders, TPM for Windows 11, OVA import/export, NAT/host-only/internal networks and a graphical display window (also on the dedicated GPU of hybrid laptops).
+- **Screen recording** — record a monitor or a region with system sound or the microphone (Super+Shift+V).
+- **Optional modules, switched from Settings** — virtual machines, Bluetooth and screen recording are installed and on by default; turn off what you don't use in **Settings → Modules** and its background services stop starting. [More below](#optional-modules).
 - **Lightweight by design** — event-driven services, timers that only run when their widget is on screen, minimal external dependencies.
 
 ## Requirements
@@ -68,6 +72,8 @@ Vexyon is a complete desktop shell built from scratch in QML on [Quickshell](htt
 - **Hyprland** on Wayland
 
 Vexyon is built to be installed on a **minimal base install** — the installer pulls in its own dependencies (Hyprland, Quickshell, greetd, etc.) via `pacman`.
+
+For virtual machines the CPU's hardware virtualization (Intel VT-x or AMD-V/SVM) has to be turned on in the firmware (BIOS/UEFI) settings. That is the one thing no installer can do; Settings → Virtualization tells you if it is off.
 
 ## Installation
 
@@ -83,6 +89,45 @@ sudo reboot
 > **Note:** run `install.sh` as your normal user, **not** with sudo — it will ask for elevation only where needed. Only the `chmod` line uses sudo.
 
 After the reboot, pick the **Vexyon** session at the greeter and you're in.
+
+### What the installer sets up
+
+Everything every feature needs — nothing has to be installed, enabled or edited by hand afterwards:
+
+- **The desktop:** Hyprland, Quickshell, the greetd login screen, portals, polkit agent, PipeWire, fonts, cursors and the rest of the shell's dependencies.
+- **Virtual machines:** `libvirt`, `qemu-desktop` (kept as is if you already have another QEMU), `virt-viewer`, `dnsmasq`, `swtpm`, `virtiofsd` and `edk2-ovmf`; the libvirt daemon (started at boot, then on demand), your user in the `libvirt` group, libvirt's default NAT network, and — when Docker or ufw is installed — libvirt's iptables firewall backend so VMs keep their network.
+- **Bluetooth:** `bluez` and its service (it only runs when an adapter is present).
+- **Screen recording:** `wf-recorder`.
+- **The rest:** `hyprpicker` (color picker), `pacman-contrib` (update counter), `libpulse` and `psmisc` (audio and privacy widgets), NetworkManager enabled when nothing else manages the network.
+- **Settings → Modules:** a small root-owned helper (`/usr/local/lib/vexyon/vexyon-modules`), its polkit action, a boot unit (`vexyon-modules.service`) and one systemd drop-in per module service — see [Optional modules](#optional-modules).
+
+Already-configured things are respected: a masked service stays masked, an existing libvirt setup with modular daemons is left alone, a `firewall_backend` you wrote is not touched, and NetworkManager is not enabled if another network manager is active.
+
+### Updating
+
+Pull and run the installer again. It is idempotent: it installs only what is missing, keeps your `shell.json` and every choice made in Settings (modules included), and never restarts your session.
+
+```bash
+cd vexyon_shell
+git pull
+./install.sh
+```
+
+## Optional modules
+
+**Settings → Modules** lists the parts of Vexyon you can turn off. All of them are installed and **on** by default.
+
+| Module | When it is off | Applies |
+|---|---|---|
+| **Virtual machines** | The VM manager and its bar widget are gone, and libvirt's services (`libvirtd`, `virtlogd`, `virtlockd`, `libvirt-guests` and their sockets) no longer start. | at the next restart |
+| **Bluetooth** | The Bluetooth controls are gone and `bluetooth.service` no longer starts, so Bluetooth devices do not connect. | at the next restart |
+| **Screen recording** | The recorder, its shortcut target, launcher entry and bar indicator are gone. It has no background service. | immediately |
+
+- **Turning a module off never removes anything.** Packages stay installed; VMs, disks, networks, snapshots and Bluetooth pairings are kept. Turning it back on needs no download and no command — just the restart.
+- **Nothing is stopped mid-session.** A module with services changes at the next boot, so a running VM or a connected headset is never pulled away. The card says "On until the next restart" while a change is pending.
+- **System changes need your password once.** The switch asks through the normal polkit dialog; the only thing it can do is record that module choice.
+- **Shared services are respected.** If other software you installed uses the same service — virt-manager or cockpit-machines for libvirt, GNOME, Plasma or Blueman for Bluetooth — that service keeps starting even with the module off; only Vexyon's part is hidden. The card names the software.
+- **Always on:** the bar, launcher, panels, notifications, lock and login screens, wallpaper, clipboard history, night light, audio, networking and power. Tools like the calculator, screenshots, the color picker and the file manager run only while you use them.
 
 ---
 
