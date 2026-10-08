@@ -194,6 +194,14 @@ PKGS=(
   #   libpulse        `pactl`: Settings → Audio device lists, privacy widget
   #   psmisc          `fuser`: the privacy widget's camera check
   hyprpicker pacman-contrib libpulse psmisc
+  # --- File Manager --------------------------------------------------------
+  #   xdg-user-dirs   the sidebar's Desktop/Documents/Downloads… at the paths
+  #                   user-dirs.dirs configures (~/Documentos…); when that file
+  #                   does not exist yet, the File Manager runs
+  #                   xdg-user-dirs-update once, as every desktop does at login.
+  #   (wl-clipboard, already above, carries the system clipboard: copy/cut/
+  #   paste between File Manager windows and with other programs.)
+  xdg-user-dirs
 )
 
 # --- Optional modules' packages (Settings → Modules) --------------------------
