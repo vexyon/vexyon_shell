@@ -502,6 +502,35 @@ else
       warn "left as you set it. If VMs get no network, Diagnose networks in the VM manager says why."
     fi
   fi
+  # "Start with 3D acceleration" (VM manager): QEMU draws the guest's 3D on
+  # the GPU (virtio-gpu + virgl, an egl-headless display on its render node).
+  # The proprietary NVIDIA driver's EGL also opens /dev/nvidiactl and
+  # /dev/nvidiaN, which libvirt's device list for QEMU (cgroup_device_acl)
+  # does not include: the 3D start fails with "egl: render node init failed".
+  # The list = libvirt 12's built-in one (null … userfaultfd; /dev/kvm is
+  # handled apart) + the NVIDIA nodes; libvirt skips the ones that do not
+  # exist (checked). Only with the NVIDIA driver, and only when nothing set a
+  # cgroup_device_acl yet — a line someone wrote is never touched.
+  if [ -e /proc/driver/nvidia/version ] || pacman -Q nvidia-utils >/dev/null 2>&1; then
+    qconf=/etc/libvirt/qemu.conf
+    if [ -f "$qconf" ] && ! grep -Eq '^[[:space:]]*cgroup_device_acl[[:space:]]*=' "$qconf"; then
+      set_libvirt_nvidia_acl() {
+        printf '\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+          "# Vexyon (install.sh): 3D-accelerated VMs on the NVIDIA GPU need its device" \
+          "# nodes; the rest is libvirt's built-in list." \
+          'cgroup_device_acl = [' \
+          '  "/dev/null", "/dev/full", "/dev/zero", "/dev/random", "/dev/urandom",' \
+          '  "/dev/ptmx", "/dev/userfaultfd",' \
+          '  "/dev/nvidiactl", "/dev/nvidia0", "/dev/nvidia1", "/dev/nvidia-modeset",' \
+          '  "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools"' \
+          ']' | sudo tee -a "$qconf" >/dev/null
+      }
+      try_step "libvirt: let QEMU use the NVIDIA GPU for 3D-accelerated VMs" \
+        "\"Start with 3D acceleration\" may fail on the NVIDIA GPU" \
+        set_libvirt_nvidia_acl
+      note "libvirt reads it when it next starts (at the latest, the next boot); running VMs are not touched"
+    fi
+  fi
   # libvirt's default NAT network ships defined (and set to autostart) with
   # the package. Defined here only if it is missing; never started here: the
   # VM manager starts a VM's networks when the VM starts.
@@ -579,8 +608,19 @@ fi
 # --- Shell files ------------------------------------------------------------
 section "Shell files"
 mkdir -p "$HOME/.config/vexyon" "$HOME/.config/hypr" \
-         "$HOME/.local/share/vexyon" "$HOME/.local/bin" \
-         "$HOME/Pictures/Wallpapers" "$HOME/Pictures/Screenshots"
+         "$HOME/.local/share/vexyon" "$HOME/.local/bin"
+
+# User folders (Desktop/Escritorio, Pictures/Imágenes…): the shell creates them
+# ONCE, in its own language, when the welcome screen is closed (that is where
+# the language is picked) — never the installer, never again. Until then
+# nothing may create them in the system's language: xdg-user-dirs-update,
+# which the xdg-user-dirs package runs at login, is switched off for this user
+# here. Only while the user has no folders configured yet, and never over a
+# user-dirs.conf of their own.
+if [ ! -e "$HOME/.config/user-dirs.dirs" ] && [ ! -e "$HOME/.config/user-dirs.conf" ]; then
+  printf '%s\n' "# Vexyon: the shell creates the user folders once, in its language." \
+    "enabled=False" > "$HOME/.config/user-dirs.conf"
+fi
 
 # Upgrade path: Vexyon used to generate a hyprlang (.conf) config set. Hyprland
 # >= 0.55 prefers hyprland.lua and 0.57 drops hyprlang entirely, so retire our
@@ -728,6 +768,21 @@ if MIG not in done:
             break
     done.append(MIG)
     combos = {(tuple(sorted(k.get("mods", []))), k.get("key")) for k in kbs}
+# Then Super+R: moved once from either old default (Super+Shift+V since 3.0,
+# Super+Shift+R before), only while Super+R is free. As above, a later
+# deliberate choice is never undone.
+MIG2 = "recorder-super-r"
+moved2 = False
+if MIG2 not in done:
+    for k in kbs:
+        if k.get("id") == "recorder" and sorted(k.get("mods", [])) == ["SHIFT", "SUPER"] and k.get("key") in ("V", "R"):
+            if (("SUPER",), "R") not in combos:
+                k["mods"] = ["SUPER"]
+                k["key"] = "R"
+                moved2 = True
+            break
+    done.append(MIG2)
+    combos = {(tuple(sorted(k.get("mods", []))), k.get("key")) for k in kbs}
 added = []
 LATE = {"vmmanager", "calculator", "recorder"}  # ids anadidos despues de la primera version
 for k in defaults:
@@ -739,7 +794,7 @@ for k in defaults:
         continue  # el usuario ya usa esa tecla para otra cosa
     kbs.append(k)
     added.append(k["id"])
-if added or MIG not in before:
+if added or MIG not in before or MIG2 not in before:
     tmp = sj + ".tmp"
     with open(tmp, "w") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -749,9 +804,11 @@ if added or MIG not in before:
         print("seeded: " + ", ".join(added))
     if moved:
         print("recorder moved from Super+Shift+R to Super+Shift+V")
+    if moved2:
+        print("recorder moved to Super+R")
 PYEOF
 }
-try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator, Super+Shift+V recorder)" \
+try_step "Seeding new keybinds (media keys, Super+V VM manager, Super+Shift+C calculator, Super+R recorder)" \
   "shell.json unreadable — skipped" \
   seed_media_keybinds
 

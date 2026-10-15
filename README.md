@@ -62,8 +62,9 @@ Vexyon is a complete desktop shell built from scratch in QML on [Quickshell](htt
 - **File manager (Super+E)** — copy, cut and paste go through the system clipboard, so they work between file manager windows and with other apps and file managers; your Desktop, Documents, Downloads, Pictures, Music and Videos folders at their real (also translated) paths; sidebar bookmarks you add with right-click → *Add to Sidebar* or by dragging a folder into the sidebar (the same bookmarks GTK file dialogs use); folder icons — a symbol on each user folder and a library of 260 symbols, or your own SVG/PNG, for any folder (right-click → *Customize Folder Icon*).
 - **Lock screen with PAM auth** — blurred wallpaper backdrop, themed clock, avatar and status pills (keyboard layout, battery, weather).
 - **i18n** — English and Spanish, switchable live from Settings (dates, weather and all UI strings included).
-- **Virtual machines** — a built-in VM manager (Super+V) on libvirt/QEMU: create, start, stop, snapshots, shared folders, TPM for Windows 11, OVA import/export, NAT/host-only/internal networks and a graphical display window (also on the dedicated GPU of hybrid laptops).
-- **Screen recording** — record a monitor or a region with system sound or the microphone (Super+Shift+V).
+- **Virtual machines** — a built-in VM manager (Super+V) on libvirt/QEMU: create, start, stop, snapshots, shared folders, TPM for Windows 11, OVA import/export, NAT/host-only/internal networks and a graphical display window. **Start with 3D acceleration** renders a Linux guest's graphics on the dedicated GPU (hybrid laptops) or on the main one when it already is the NVIDIA (MUX in dGPU mode, desktops): virtio-gpu with virgl, for that start only — the VM's saved definition is not changed. Windows guests have no 3D driver for it.
+- **Screen recording (Super+R)** — record a whole screen (whatever workspace it shows), one window or a region; with system sound, the microphone, or both in one track; at native size or scaled to 1440p/1080p/720p, at the screen's rate or a fixed 60/30 fps.
+- **Calculator (Super+Shift+C)** — a quick calculator on the focused screen; nothing runs while it is closed.
 - **Optional modules, switched from Settings** — virtual machines, Bluetooth and screen recording are installed and on by default; turn off what you don't use in **Settings → Modules** and its background services stop starting. [More below](#optional-modules).
 - **Lightweight by design** — event-driven services, timers that only run when their widget is on screen, minimal external dependencies.
 
@@ -96,13 +97,13 @@ After the reboot, pick the **Vexyon** session at the greeter and you're in.
 Everything every feature needs — nothing has to be installed, enabled or edited by hand afterwards:
 
 - **The desktop:** Hyprland, Quickshell, the greetd login screen, portals, polkit agent, PipeWire, fonts, cursors and the rest of the shell's dependencies.
-- **Virtual machines:** `libvirt`, `qemu-desktop` (kept as is if you already have another QEMU), `virt-viewer`, `dnsmasq`, `swtpm`, `virtiofsd` and `edk2-ovmf`; the libvirt daemon (started at boot, then on demand), your user in the `libvirt` group, libvirt's default NAT network, and — when Docker or ufw is installed — libvirt's iptables firewall backend so VMs keep their network.
+- **Virtual machines:** `libvirt`, `qemu-desktop` (kept as is if you already have another QEMU), `virt-viewer`, `dnsmasq`, `swtpm`, `virtiofsd` and `edk2-ovmf`; the libvirt daemon (started at boot, then on demand), your user in the `libvirt` group, libvirt's default NAT network, — when Docker or ufw is installed — libvirt's iptables firewall backend so VMs keep their network, and — with the NVIDIA driver — the NVIDIA device nodes in libvirt's `cgroup_device_acl` (`/etc/libvirt/qemu.conf`), which 3D-accelerated VMs need.
 - **Bluetooth:** `bluez` and its service (it only runs when an adapter is present).
 - **Screen recording:** `wf-recorder`.
 - **The rest:** `hyprpicker` (color picker), `pacman-contrib` (update counter), `libpulse` and `psmisc` (audio and privacy widgets), `xdg-user-dirs` (the file manager's user folders), NetworkManager enabled when nothing else manages the network.
 - **Settings → Modules:** a small root-owned helper (`/usr/local/lib/vexyon/vexyon-modules`), its polkit action, a boot unit (`vexyon-modules.service`) and one systemd drop-in per module service — see [Optional modules](#optional-modules).
 
-Already-configured things are respected: a masked service stays masked, an existing libvirt setup with modular daemons is left alone, a `firewall_backend` you wrote is not touched, and NetworkManager is not enabled if another network manager is active.
+Already-configured things are respected: a masked service stays masked, an existing libvirt setup with modular daemons is left alone, a `firewall_backend` or `cgroup_device_acl` you wrote is not touched, and NetworkManager is not enabled if another network manager is active. The installer does not create your user folders (`~/Desktop`, `~/Escritorio`…): the shell does, once, in its language — see [File manager](#file-manager).
 
 ### Updating
 
@@ -117,7 +118,7 @@ git pull
 ## File manager
 
 - **Clipboard.** Files you copy or cut are served by `wl-copy` (from `wl-clipboard`), so they stay on the clipboard after the file manager window closes and across a shell restart, until something else is copied. Like any Wayland clipboard, it ends with the session unless a clipboard manager keeps it. Pasting never overwrites: a name that already exists is skipped and the card offers **Keep both**; pasting into the same folder makes a copy named "name (copy)".
-- **User folders.** If `~/.config/user-dirs.dirs` does not exist yet, the file manager runs `xdg-user-dirs-update` once, the same thing other desktops do at login. Existing folders and paths are never changed.
+- **User folders.** Created once, in the shell's language, when you close the welcome screen (where the language is picked): `Desktop`, `Documents`, `Downloads`… in English, `Escritorio`, `Documentos`, `Descargas`… in Spanish, plus the folders for wallpapers, screenshots and screen recordings inside them. Never again after that — not on an update, a rebuild or a reinstall — and never if `~/.config/user-dirs.dirs` already exists (your folders, from another desktop or an earlier Vexyon, stay as they are). A `~/.config/user-dirs.conf` with `enabled=False` stops `xdg-user-dirs-update` from recreating or renaming them at login; delete it if you want that tool back.
 - **Where things are kept.** Bookmarks: `~/.config/gtk-3.0/bookmarks` (shared with GTK file dialogs, Nautilus and Thunar; lines Vexyon cannot show, like `sftp://`, are kept). Folder icons: `~/.local/share/vexyon/folder-icons.json` and, for your own images, a sanitised copy in `~/.local/share/vexyon/folder-icons/`. Nothing is written inside your folders.
 
 ## Optional modules
