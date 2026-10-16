@@ -2,7 +2,8 @@
 # ============================================================================
 #  Vexyon installer (3.0)
 #  OUT OF THE BOX: installs and configures EVERY dependency of every feature,
-#  optional modules included (virtual machines, Bluetooth, screen recording),
+#  optional modules included (virtual machines, Bluetooth, screen recording,
+#  AirDrop),
 #  so nothing afterwards needs a package install, a systemctl or a config edit.
 #  Optional modules are on by default and are switched in Settings → Modules.
 #  Installs dependencies and deploys the shell into the standard locations:
@@ -216,6 +217,11 @@ MOD_PKGS=(
   # Virtual machines: libvirt, its NAT/DHCP (dnsmasq), the display window,
   # TPM for Windows 11, shared folders, UEFI firmware.
   libvirt dnsmasq virt-viewer swtpm virtiofsd edk2-ovmf
+  # AirDrop: what builds its radio, omdrop-owl (git + base-devel for makepkg;
+  # makepkg -s brings the rest of its dependencies, see "AirDrop" below),
+  # hostapd (the hidden AP of cards without ad-hoc mode) and heif-convert
+  # (an iPhone's HEIC photo goes on the clipboard as a JPEG).
+  git base-devel hostapd libheif
 )
 # QEMU: qemu-desktop, unless some QEMU is already installed. qemu-full and
 # qemu-base conflict with it, and `pacman --noconfirm` answers "no" to the
@@ -444,7 +450,7 @@ if [ "$MODULES_OK" = 1 ] && [ ! -e "$MOD_STATE/.migrated-3.0" ]; then
 fi
 vm_wanted() { [ ! -e "$MOD_STATE/vm.disabled" ]; }
 bt_wanted() { [ ! -e "$MOD_STATE/bluetooth.disabled" ]; }
-[ "$MODULES_OK" = 1 ] && SUMMARY+=("Modules: virtual machines $(vm_wanted && echo on || echo off), Bluetooth $(bt_wanted && echo on || echo off), screen recording on — Settings → Modules")
+[ "$MODULES_OK" = 1 ] && SUMMARY+=("Modules: virtual machines $(vm_wanted && echo on || echo off), Bluetooth $(bt_wanted && echo on || echo off), screen recording and AirDrop as set in Settings → Modules")
 
 # --- Virtual machines (module "vm") -------------------------------------------
 section "Virtual machines"
@@ -580,6 +586,126 @@ else
       fi
       ;;
   esac
+fi
+
+# --- AirDrop (module "airdrop") ----------------------------------------------
+# AirDrop with iPhones, iPads and Macs. A SESSION module, like screen
+# recording: it runs no service at all, so Settings → Modules switches it at
+# once. Two upstream projects, at the same pinned commits as the NixOS flake:
+#   omdrop-owl  the radio: AWDL in userspace through OWL, for Wi-Fi cards
+#               without Apple's chip. Built here with makepkg from its own
+#               PKGBUILD, so pacman owns it: /usr/lib/omdrop, its polkit action
+#               (no password from the active session), a NetworkManager rule
+#               keeping OWL's interfaces unmanaged, a .link fixing awdl0's MAC.
+#               Its root helper runs through pkexec ONLY while visible.
+#   omdrop      the `omdrop` command and the receiver (as the user, ONLY while
+#               visible): /usr/local/lib/vexyon/plugins/omdrop, with stand-ins
+#               for the few Omarchy commands it calls (vexyon-omdrop-compat).
+# The name Apple devices show is the host name (vexyon-airdrop sets it).
+section "AirDrop"
+OWL_REPO=https://github.com/t4t5/omdrop-owl.git
+OWL_COMMIT=118320566d780240267552f1ea025641751fd443
+OMDROP_REPO=https://github.com/netmojo-systems/omdrop-plugin.git
+OMDROP_COMMIT=95ee625fd63e0eb9061f1d08c8116231d0f2a303   # release 0.16.4
+AIRDROP_DIR=/usr/local/lib/vexyon/plugins
+AIRDROP_SRC="$HOME/.cache/vexyon"
+
+# A checkout of REPO at COMMIT in DIR (git checks the content against the
+# commit id, which is the pin).
+pinned_checkout() {   # <repo> <commit> <dir>
+  if [ -d "$3/.git" ]; then
+    git -C "$3" fetch -q origin || return 1
+  else
+    mkdir -p "$(dirname "$3")" && git clone -q "$1" "$3" || return 1
+  fi
+  git -C "$3" -c advice.detachedHead=false checkout -q --detach "$2" &&
+    [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]
+}
+
+# The radio. Rebuilt only when the commit changes: the commit built last is
+# kept beside the plugin. Never over brcmfmac-awdl-dkms, the other radio
+# backend (Apple Silicon Macs): the two conflict, and omdrop uses either.
+build_omdrop_owl() {
+  local src="$AIRDROP_SRC/omdrop-owl"
+  pinned_checkout "$OWL_REPO" "$OWL_COMMIT" "$src" || return 1
+  # makepkg: -s installs its dependencies (pacman, official repos), -i
+  # installs the package, -f rebuilds over a previous build in the checkout.
+  ( cd "$src" && makepkg -sif --noconfirm ) || return 1
+  sudo install -d -m 0755 "$AIRDROP_DIR"
+  echo "$OWL_COMMIT" | sudo tee "$AIRDROP_DIR/.omdrop-owl-commit" >/dev/null
+}
+
+# The command and receiver: upstream's files, plus ONE line at the top of
+# bin/omdrop putting the vexyon/ stand-ins first on its PATH. It re-runs itself
+# from systemd user units, so the line lives in the script, and the stand-ins
+# are seen by omdrop alone, never on the user's PATH.
+install_omdrop() {
+  local src="$AIRDROP_SRC/omdrop-plugin" stage c
+  pinned_checkout "$OMDROP_REPO" "$OMDROP_COMMIT" "$src" || return 1
+  stage=$(mktemp -d) || return 1
+  cp -r "$src/manifest.json" "$src/bin" "$src/share" "$src/docs" "$src/skills" \
+        "$src/LICENSE" "$src/README.md" "$stage/" || return 1
+  # shellcheck disable=SC2016  # literal shell code for bin/omdrop
+  sed -i '/^PROJ="\$(cd "\$(dirname "\$SELF")\/.." && pwd)"$/a\
+# Vexyon: stand-ins for the Omarchy commands omdrop calls (vexyon-omdrop-compat).\
+export PATH="$PROJ/vexyon:$PATH"' "$stage/bin/omdrop"
+  # shellcheck disable=SC2016
+  grep -qx 'export PATH="$PROJ/vexyon:$PATH"' "$stage/bin/omdrop" || { rm -rf "$stage"; return 1; }
+  mkdir "$stage/vexyon"
+  for c in notification-send launch-browser default-terminal; do
+    printf '#!/bin/sh\nexec /usr/local/lib/vexyon/vexyon-omdrop-compat %s "$@"\n' "$c" > "$stage/vexyon/omarchy-$c"
+  done
+  chmod 755 "$stage/vexyon/"*
+  sudo install -D -m 0755 -o root -g root "$SRC/config/vexyon/bin/vexyon-omdrop-compat" \
+    /usr/local/lib/vexyon/vexyon-omdrop-compat
+  # Root-owned, like everything pkexec-adjacent; swapped in whole.
+  sudo install -d -m 0755 "$AIRDROP_DIR"
+  sudo rm -rf "$AIRDROP_DIR/omdrop.new"
+  sudo cp -r "$stage" "$AIRDROP_DIR/omdrop.new"
+  sudo chown -R root:root "$AIRDROP_DIR/omdrop.new"
+  sudo chmod -R u+rwX,go+rX,go-w "$AIRDROP_DIR/omdrop.new"
+  sudo rm -rf "$AIRDROP_DIR/omdrop"
+  sudo mv "$AIRDROP_DIR/omdrop.new" "$AIRDROP_DIR/omdrop"
+  sudo ln -sfn "$AIRDROP_DIR/omdrop/bin/omdrop" /usr/local/bin/omdrop
+  rm -rf "$stage"
+}
+
+AIRDROP_OK=1
+if pacman -Q brcmfmac-awdl-dkms >/dev/null 2>&1; then
+  note "brcmfmac-awdl-dkms is installed — AirDrop uses it as its radio (omdrop-owl not built)"
+elif pacman -Q omdrop-owl >/dev/null 2>&1 &&
+     [ "$(cat "$AIRDROP_DIR/.omdrop-owl-commit" 2>/dev/null)" = "$OWL_COMMIT" ]; then
+  ok "AirDrop radio (omdrop-owl) already built at ${OWL_COMMIT:0:7}"
+else
+  try_step "Building the AirDrop radio (omdrop-owl ${OWL_COMMIT:0:7}, makepkg)" \
+    "Settings → AirDrop will say the radio is missing" \
+    build_omdrop_owl || AIRDROP_OK=0
+  pacman -Q omdrop-owl >/dev/null 2>&1 || AIRDROP_OK=0
+fi
+try_step "Installing omdrop 0.16.4 (AirDrop command and receiver)" \
+  "Settings → AirDrop will say AirDrop is not installed" \
+  install_omdrop
+[ -x "$AIRDROP_DIR/omdrop/bin/omdrop" ] || AIRDROP_OK=0
+# The receiver listens on TCP 8771, on awdl0 only, for link-local peers. The
+# firewall exception is set up here (the same rule omdrop's own
+# `omdrop firewall install` adds, so `omdrop firewall remove` finds it).
+if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw.service; then
+  try_step "Firewall (ufw): AirDrop receiver on awdl0, TCP 8771, link-local only" \
+    "the iPhone will see this computer but cannot send" \
+    sudo ufw allow in on awdl0 from fe80::/10 to fe80::/10 port 8771 proto tcp \
+      comment "Omdrop AirDrop receiver"
+elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld.service; then
+  fw_airdrop() {
+    local rule='rule family="ipv6" source address="fe80::/10" port port="8771" protocol="tcp" accept'
+    sudo firewall-cmd -q --permanent --add-rich-rule="$rule" && sudo firewall-cmd -q --add-rich-rule="$rule"
+  }
+  try_step "Firewall (firewalld): AirDrop receiver, TCP 8771, link-local only" \
+    "the iPhone will see this computer but cannot send" fw_airdrop
+fi
+if [ "$AIRDROP_OK" = 1 ]; then
+  SUMMARY+=("AirDrop: installed (Apple devices see this computer as \"$(cat /proc/sys/kernel/hostname 2>/dev/null)\") — Settings → AirDrop")
+else
+  warn "AirDrop is not fully installed — re-run the installer; Settings → AirDrop says what is missing"
 fi
 
 # --- Network: NetworkManager --------------------------------------------------
