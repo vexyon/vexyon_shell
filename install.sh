@@ -151,6 +151,9 @@ fi
 PKGS=(
   hyprland quickshell jq hyprsunset ghostty fish
   python python-pillow
+  # python-gobject: vexyon-portal, the file chooser behind the desktop portal
+  # (the Vexyon file manager opens when an app asks for a file).
+  python-gobject
   qt6-base qt6-declarative qt6-svg
   # qt6-imageformats: lector WebP de Qt. qt6-base solo trae PNG/JPEG/GIF/BMP y
   # el selector de foto de perfil ofrece *.webp: sin él un avatar WebP no carga
@@ -303,6 +306,49 @@ if [ -f "$SRC/config/polkit/49-vexyon-power.rules" ]; then
     warn "a password. Add it with:  sudo usermod -aG wheel $USER"
   fi
 fi
+
+# --- File chooser: the Vexyon file manager, for every app ------------------
+# An app that asks the desktop portal for a file (a browser's "Upload", "Save
+# as", GTK apps with GTK_USE_PORTAL=1, which vexyon-start exports) gets the
+# Vexyon file manager: xdg-desktop-portal starts vexyon-portal over D-Bus and
+# it opens a pick-mode window through vexyon-pick, which asks the person's own
+# running shell. Both live in a system path because a D-Bus service file
+# needs an absolute one. xdg-desktop-portal-gtk stays the fallback (no shell
+# running). hyprland-portals.conf in /etc/xdg is read before Hyprland's copy
+# in /usr/share; it is written only where there is none or it is ours, so a
+# hand-written one is never replaced.
+PORTAL_CONF=/etc/xdg/xdg-desktop-portal/hyprland-portals.conf
+install_file_chooser() {
+  sudo install -D -m 0755 -o root -g root "$SRC/config/vexyon/bin/vexyon-portal" /usr/local/lib/vexyon/vexyon-portal
+  sudo install -D -m 0755 -o root -g root "$SRC/config/vexyon/bin/vexyon-pick" /usr/local/lib/vexyon/vexyon-pick
+  sudo install -D -m 0644 "$SRC/share/vexyon/portal/vexyon.portal" /usr/share/xdg-desktop-portal/portals/vexyon.portal
+  sudo install -d -m 0755 /usr/share/dbus-1/services
+  printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.vexyon\nExec=/usr/local/lib/vexyon/vexyon-portal\n' \
+    | sudo tee /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.vexyon.service >/dev/null
+  if [ ! -e "$PORTAL_CONF" ] || grep -q '^# Vexyon:' "$PORTAL_CONF" 2>/dev/null; then
+    sudo install -D -m 0644 "$SRC/share/vexyon/portal/hyprland-portals.conf" "$PORTAL_CONF"
+  fi
+}
+try_step "File chooser: the Vexyon file manager (desktop portal)" \
+  "apps keep the GTK file chooser" install_file_chooser
+if [ -e "$PORTAL_CONF" ] && ! grep -q '^# Vexyon:' "$PORTAL_CONF" 2>/dev/null; then
+  warn "$PORTAL_CONF is your own: file choosers follow it. Add"
+  warn "  org.freedesktop.impl.portal.FileChooser=vexyon;gtk  under [preferred] to use Vexyon's."
+fi
+
+# graphical-session.target: xdg-desktop-portal >= 1.21 is
+# Requisite=graphical-session.target and Hyprland does not start it, so every
+# portal request failed with "startup job failed". The shell starts this
+# target once it is up and vexyon-start stops it at logout
+# (config/vexyon/bin/vexyon-session), the way sway-session.target works.
+try_step "Session target (graphical-session.target for the portals)" \
+  "file choosers and screen sharing may not start" \
+  bash -c 'sudo install -d -m 0755 /etc/systemd/user &&
+    printf "%s\n" "[Unit]" "Description=Vexyon session" "BindsTo=graphical-session.target" \
+      "Wants=graphical-session-pre.target" "After=graphical-session-pre.target" \
+    | sudo tee /etc/systemd/user/vexyon-session.target >/dev/null'
+# A running user manager learns about it now, not only at the next login.
+systemctl --user daemon-reload >/dev/null 2>&1 || true
 
 # --- Power services ---------------------------------------------------------
 # upower: sin él Battery.present es false y el indicador de batería de la barra
