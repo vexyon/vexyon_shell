@@ -242,6 +242,21 @@ else
   PKGS+=(awww)
 fi
 
+# Formatting external drives (Files → a USB drive → "Format drive…", through
+# udisks2): udisks runs mkfs.exfat, mkfs.fat and mkfs.ntfs; ext4's comes with
+# base (e2fsprogs). Each tool is asked for only when it is missing: a system
+# that already formats with exfat-utils, or with an ntfs-3g from before Arch
+# moved the NTFS tools into ntfsprogs (2026), keeps it — they own the same
+# files, and `pacman --noconfirm` answers "no" to replacing them, which would
+# fail the whole transaction.
+if command -v pacman >/dev/null 2>&1; then
+  command -v mkfs.exfat >/dev/null 2>&1 || PKGS+=(exfatprogs)
+  command -v mkfs.fat >/dev/null 2>&1 || PKGS+=(dosfstools)
+  if ! command -v mkfs.ntfs >/dev/null 2>&1; then
+    if pacman -Si ntfsprogs >/dev/null 2>&1; then PKGS+=(ntfsprogs); else PKGS+=(ntfs-3g); fi
+  fi
+fi
+
 section "Dependencies"
 if [ "${VEXYON_SKIP_PKGS:-0}" = "1" ]; then
   note "VEXYON_SKIP_PKGS=1 — skipping package install"
