@@ -218,8 +218,10 @@ MOD_PKGS=(
   # Bluetooth: bluetoothd (starts only when an adapter is present).
   bluez
   # Virtual machines: libvirt, its NAT/DHCP (dnsmasq), the display window,
-  # TPM for Windows 11, shared folders, UEFI firmware.
-  libvirt dnsmasq virt-viewer swtpm virtiofsd edk2-ovmf
+  # TPM for Windows 11, shared folders, UEFI firmware, and passt — the
+  # "Private NAT + port forwarding" adapter mode (user-mode networking that
+  # neither Docker nor the firewall can cut; libvirt starts it per VM).
+  libvirt dnsmasq virt-viewer swtpm virtiofsd edk2-ovmf passt
   # AirDrop: what builds its radio, omdrop-owl (git + base-devel for makepkg;
   # makepkg -s brings the rest of its dependencies, see "AirDrop" below),
   # hostapd (the hidden AP of cards without ad-hoc mode) and heif-convert
@@ -232,8 +234,10 @@ MOD_PKGS=(
 # qemu-base conflict with it, and `pacman --noconfirm` answers "no" to the
 # replacement question — the whole transaction would fail.
 command -v qemu-system-x86_64 >/dev/null 2>&1 || MOD_PKGS+=(qemu-desktop)
-# libvirt's NAT needs a firewall command; nearly every system has one.
-{ command -v nft || command -v iptables; } >/dev/null 2>&1 || MOD_PKGS+=(nftables)
+# libvirt's NAT runs on its iptables backend (set below, under "VMs"), so an
+# iptables command must exist; iptables-nft provides one too. Only when none
+# does: installing it next to an existing one would conflict.
+command -v iptables >/dev/null 2>&1 || MOD_PKGS+=(iptables)
 
 # Wallpaper daemon: upstream renamed `swww` to `awww` (Arch extra y CachyOS ya
 # solo empaquetan awww, que hace Provides=swww). Instalar el que exista para
@@ -549,10 +553,12 @@ else
   # Docker and ufw set a DROP policy in the iptables tables, which libvirt's
   # nftables rules (another table) cannot override: VMs lose the internet and
   # DHCP. libvirt's iptables backend writes into the same tables, ahead of
-  # theirs (measured: PROJECT_STATE.md, VM networking session). Only when
-  # nothing chose a backend yet — a firewall_backend line someone wrote is
-  # never touched.
-  if command -v dockerd >/dev/null 2>&1 || command -v ufw >/dev/null 2>&1; then
+  # theirs, in its own LIBVIRT_* chains (measured: PROJECT_STATE.md, VM
+  # networking session and phase 1 of the VM manager: Docker 29 + ufw-like
+  # policy + NAT VM, all PASS). Set even without Docker or ufw today, so
+  # installing Docker later breaks nothing. Only when nothing chose a backend
+  # yet — a firewall_backend line someone wrote is never touched.
+  {
     nconf=/etc/libvirt/network.conf
     cur_be=$(sed -n 's/^[[:space:]]*firewall_backend[[:space:]]*=[[:space:]]*"\{0,1\}\([a-z]*\).*/\1/p' "$nconf" 2>/dev/null | tail -n 1)
     if [ -z "$cur_be" ]; then
@@ -562,15 +568,15 @@ else
           "# tables, which libvirt's nftables rules cannot override." \
           'firewall_backend = "iptables"' | sudo tee -a "$nconf" >/dev/null
       }
-      try_step "libvirt firewall: iptables backend (Docker or ufw is installed)" \
+      try_step "libvirt firewall: iptables backend (works next to Docker and ufw)" \
         "VMs may get no network while Docker/ufw is active" \
         set_libvirt_iptables
       note "libvirt reads it when it next starts (at the latest, the next boot); running VMs are not touched"
     elif [ "$cur_be" != iptables ]; then
-      warn "/etc/libvirt/network.conf sets firewall_backend = \"$cur_be\" and Docker/ufw is installed —"
+      warn "/etc/libvirt/network.conf sets firewall_backend = \"$cur_be\" —"
       warn "left as you set it. If VMs get no network, Diagnose networks in the VM manager says why."
     fi
-  fi
+  }
   # "Start with 3D acceleration" (VM manager): QEMU draws the guest's 3D on
   # the GPU (virtio-gpu + virgl, an egl-headless display on its render node).
   # The proprietary NVIDIA driver's EGL also opens /dev/nvidiactl and
