@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# update-airdrop-pins — move AirDrop's two upstream pins in install.sh to their
+# newest compatible releases. Arch / CachyOS repository.
+#
+#   tools/update-airdrop-pins          update install.sh, check the result
+#   tools/update-airdrop-pins --check  only say whether newer releases exist
+#
+# install.sh checks out omdrop-owl and omdrop at fixed commits (git checks the
+# content against the commit id), so every install of a given Vexyon commit
+# builds the same thing. This script is how the pins move forward: run it,
+# re-run ./install.sh on a test machine, commit. Nothing updates by itself on
+# a user's machine; re-running the installer of a newer Vexyon does.
+#
+# omdrop-owl is held below 0.4.0: from 0.4.0 upstream is "Owly", a Rust
+# rewrite with its own system service, D-Bus names and interfaces. Moving
+# there is a migration of Vexyon's integration, not a pin bump; the script
+# says when such a release exists. Raise OWL_BELOW once that is done.
+# The NixOS repository has the same script for flake.nix / nix/omdrop.nix;
+# keep the two at the same releases.
+set -euo pipefail
+
+OWL_URL=https://github.com/t4t5/omdrop-owl
+OMDROP_URL=https://github.com/netmojo-systems/omdrop-plugin
+OWL_BELOW=0.4.0
+
+cd "$(dirname "$0")/.."
+check=0; [ "${1:-}" = "--check" ] && check=1
+
+newest() {   # <url> [below] -> "tag commit"
+  git ls-remote --tags "$1" 'v*' | awk '{ sub("refs/tags/", "", $2); print $2, $1 }' |
+    { if [ -n "${2:-}" ]; then awk -v below="$2" '
+        function n(v,  a) { sub(/^v/, "", v); split(v, a, "."); return a[1]*1e6 + a[2]*1e3 + a[3] }
+        n($1) < n(below)'; else cat; fi; } |
+    awk '{ t=$1; sub(/\^\{\}$/, "", t); c[t]=$2 } END { for (t in c) print t, c[t] }' |
+    grep -E '^v[0-9]+\.[0-9]+\.[0-9]+ ' | sort -V | tail -n 1
+}
+
+cur_owl=$(sed -n 's/^OWL_COMMIT=\([0-9a-f]\{40\}\).*/\1/p' install.sh)
+cur_om=$(sed -n 's/^OMDROP_COMMIT=\([0-9a-f]\{40\}\).*/\1/p' install.sh)
+read -r owl_tag owl_rev < <(newest "$OWL_URL" "$OWL_BELOW")
+read -r om_tag om_rev < <(newest "$OMDROP_URL")
+read -r owl_any _ < <(newest "$OWL_URL")
+
+echo "omdrop-owl: pinned ${cur_owl:0:7}, newest compatible $owl_tag (${owl_rev:0:7})"
+[ "$owl_any" != "$owl_tag" ] && echo "  note: $owl_any exists (Owly, >= $OWL_BELOW) — needs the integration migrated first"
+echo "omdrop:     pinned ${cur_om:0:7}, newest $om_tag (${om_rev:0:7})"
+[ "$cur_owl" = "$owl_rev" ] && [ "$cur_om" = "$om_rev" ] && { echo "Up to date."; exit 0; }
+[ "$check" = 1 ] && exit 0
+
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+git clone -q "$OMDROP_URL" "$work/omdrop"
+git -C "$work/omdrop" -c advice.detachedHead=false checkout -q "$om_rev"
+# install_omdrop() inserts its PATH line after this one; it must still exist.
+# shellcheck disable=SC2016  # literal text to look for
+grep -qx 'PROJ="$(cd "$(dirname "$SELF")/.." && pwd)"' "$work/omdrop/bin/omdrop" ||
+  { echo "omdrop $om_tag: bin/omdrop no longer has the PROJ= line install.sh patches after" >&2; exit 1; }
+git clone -q "$OWL_URL" "$work/owl"
+git -C "$work/owl" -c advice.detachedHead=false checkout -q "$owl_rev"
+[ -f "$work/owl/PKGBUILD" ] && [ -f "$work/owl/userspace/omdrop-discoverable" ] ||
+  { echo "omdrop-owl $owl_tag: no PKGBUILD / omdrop-discoverable at the top level any more" >&2; exit 1; }
+
+om_ver=${om_tag#v}
+sed -i -e "s/^OWL_COMMIT=[0-9a-f]\{40\}.*/OWL_COMMIT=$owl_rev       # release ${owl_tag#v}/" \
+       -e "s/^OMDROP_COMMIT=[0-9a-f]\{40\}.*/OMDROP_COMMIT=$om_rev   # release $om_ver/" \
+       -e "s/Installing omdrop [0-9.]* (AirDrop/Installing omdrop $om_ver (AirDrop/" install.sh
+bash -n install.sh
+git diff --stat -- install.sh
+echo "OK. Re-run ./install.sh on a test machine before committing."

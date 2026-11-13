@@ -223,8 +223,10 @@ MOD_PKGS=(
   # AirDrop: what builds its radio, omdrop-owl (git + base-devel for makepkg;
   # makepkg -s brings the rest of its dependencies, see "AirDrop" below),
   # hostapd (the hidden AP of cards without ad-hoc mode) and heif-convert
-  # (an iPhone's HEIC photo goes on the clipboard as a JPEG).
-  git base-devel hostapd libheif
+  # (an iPhone's HEIC photo goes on the clipboard as a JPEG), and what its
+  # receiver imports (omdrop's own RECEIVER_PKGS: the archive reader and the
+  # kernel keyring library) — before, omdrop offered to install them itself.
+  git base-devel hostapd libheif python-libarchive-c keyutils
 )
 # QEMU: qemu-desktop, unless some QEMU is already installed. qemu-full and
 # qemu-base conflict with it, and `pacman --noconfirm` answers "no" to the
@@ -665,9 +667,9 @@ fi
 # The name Apple devices show is the host name (vexyon-airdrop sets it).
 section "AirDrop"
 OWL_REPO=https://github.com/t4t5/omdrop-owl.git
-OWL_COMMIT=118320566d780240267552f1ea025641751fd443
+OWL_COMMIT=8213aee9f018ffd78a3fc71863a364fcddd938cd       # release 0.3.0
 OMDROP_REPO=https://github.com/netmojo-systems/omdrop-plugin.git
-OMDROP_COMMIT=95ee625fd63e0eb9061f1d08c8116231d0f2a303   # release 0.16.4
+OMDROP_COMMIT=ee475b2977c88fa9d2d6ef29068a3c5e4800b0ee   # release 0.18.12
 AIRDROP_DIR=/usr/local/lib/vexyon/plugins
 AIRDROP_SRC="$HOME/.cache/vexyon"
 
@@ -743,7 +745,7 @@ else
     build_omdrop_owl || AIRDROP_OK=0
   pacman -Q omdrop-owl >/dev/null 2>&1 || AIRDROP_OK=0
 fi
-try_step "Installing omdrop 0.16.4 (AirDrop command and receiver)" \
+try_step "Installing omdrop 0.18.12 (AirDrop command and receiver)" \
   "Settings → AirDrop will say AirDrop is not installed" \
   install_omdrop
 [ -x "$AIRDROP_DIR/omdrop/bin/omdrop" ] || AIRDROP_OK=0
