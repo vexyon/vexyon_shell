@@ -657,6 +657,41 @@ else
   esac
 fi
 
+# --- VM guest tools disc (module "vm") ---------------------------------------
+# The "Guest Additions" for Windows guests: the virtio-win ISO, whose
+# virtio-win-guest-tools.exe installs the virtio drivers, the QXL display
+# driver, the SPICE agent (clipboard, auto-resize) and the QEMU guest agent.
+# Arch packages it only in the AUR, so the installer fetches the official
+# Fedora download — the same file and SHA-256 that nixpkgs pins for its
+# virtio-win 0.1.285-1 — and keeps it in /usr/local/share/vexyon (not
+# /usr/share/virtio-win, which an AUR package would own). Skipped when the
+# right file is already there; a failure only means the VM manager says the
+# disc is missing and how to get it back (run the installer again).
+GT_URL=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win.iso
+GT_SHA=e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331
+GT_ISO=/usr/local/share/vexyon/virtio-win.iso
+fetch_guest_tools() {
+  local tmp
+  # /var/tmp, not /tmp: /tmp is a RAM-backed tmpfs on Arch, and this is 750 MB.
+  tmp=$(mktemp -p /var/tmp vexyon-virtio-win.XXXXXX) || return 1
+  if ! curl -fL --retry 3 -o "$tmp" "$GT_URL"; then rm -f "$tmp"; return 1; fi
+  if ! printf '%s  %s\n' "$GT_SHA" "$tmp" | sha256sum -c --status; then
+    rm -f "$tmp"; echo "checksum mismatch: not installed" >&2; return 1
+  fi
+  sudo install -D -m 0644 -o root -g root "$tmp" "$GT_ISO"
+  rm -f "$tmp"
+}
+if command -v virsh >/dev/null 2>&1; then
+  section "VM guest tools"
+  if [ -f "$GT_ISO" ] && printf '%s  %s\n' "$GT_SHA" "$GT_ISO" | sha256sum -c --status 2>/dev/null; then
+    ok "VM guest tools disc (virtio-win 0.1.285) already in place"
+  else
+    try_step "Downloading the VM guest tools disc (virtio-win 0.1.285, ~750 MB, checksum-verified)" \
+      "the VM manager will say the guest tools disc is missing" \
+      fetch_guest_tools
+  fi
+fi
+
 # --- AirDrop (module "airdrop") ----------------------------------------------
 # AirDrop with iPhones, iPads and Macs. A SESSION module, like screen
 # recording: it runs no service at all, so Settings → Modules switches it at
